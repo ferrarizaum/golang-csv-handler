@@ -1,0 +1,61 @@
+# Terraform files - DO NOT COMMIT
+# These contain sensitive state information and actual deployment values
+
+# Terraform state files (contain sensitive AWS resource info)
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+
+# Terraform variables with actual values (use terraform.tfvars.example instead)
+terraform/terraform.tfvars
+
+# Generated Terraform files
+terraform/lambda_function.zip
+terraform/.terraform/
+
+# Lambda compiled binaries (regenerate with make build)
+lambda/bootstrap
+lambda/*.exe
+
+# Go compiled binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS files
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Environment files (if you add any)
+.env
+.env.local
+
+# Temporary files
+*.tmp
+*.temp
