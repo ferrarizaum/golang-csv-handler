@@ -1,17 +1,58 @@
 # Golang CSV Handler
 
-A Go-based project for handling CSV files with both a local CLI tool and an AWS Lambda function for automated S3 file checking.
+A Go-based project for handling CSV files with a local CLI tool, AWS Lambda function, and ECS Fargate container for automated processing.
 
 ## Project Overview
 
-This project consists of two main components:
+This project consists of three main components:
 
 1. **CLI Tool** (`main.go`) - Command-line CSV handler for local file processing
-2. **Lambda Function** (`lambda/`) - Serverless AWS Lambda function that checks S3 buckets for CSV files on a schedule
+2. **Lambda Function** (`lambda/`) - Serverless function that checks S3 buckets for CSV files on a schedule
+3. **ECS Fargate Container** - Processes CSV files found by Lambda (removes duplicates, cleans data)
 
 ## Quick Start
 
-See [QUICKSTART.md](./QUICKSTART.md) for a 5-minute setup guide.
+### 1. Build Lambda
+```bash
+cd lambda
+go mod tidy
+make build
+```
+
+### 2. Configure Terraform
+```bash
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars - change s3_bucket_name (must be globally unique!)
+```
+
+### 3. Deploy Infrastructure
+```bash
+terraform init
+terraform plan
+terraform apply
+```
+
+### 4. Build & Push Docker Image (for ECS)
+```bash
+# Get ECR URL
+ECR_URL=$(terraform output -raw ecr_repository_url)
+
+# Authenticate & push
+aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin $ECR_URL
+docker build -t csv-handler .
+docker tag csv-handler:latest $ECR_URL:latest
+docker push $ECR_URL:latest
+```
+
+### 5. Test
+```bash
+# Upload a CSV file
+aws s3 cp test.csv s3://<your-bucket>/test.csv
+
+# Lambda will trigger ECS automatically, or manually invoke:
+aws lambda invoke --function-name s3-file-checker response.json
+```
 
 ## Prerequisites
 
@@ -78,29 +119,38 @@ terraform plan    # Review what will be created
 terraform apply   # Deploy (type 'yes' to confirm)
 ```
 
+## Architecture
+
+```
+EventBridge Scheduler
+    ↓ (triggers)
+Lambda Function (checks S3 for CSV files)
+    ↓ (triggers ECS task for each file)
+ECS Fargate Container
+    ↓ (downloads, processes, uploads)
+S3 Bucket (stores cleaned CSV files)
+```
+
 ## Project Structure
 
 ```
 golang-csv-handler/
 ├── main.go              # CLI tool for local CSV processing
+├── Dockerfile           # Docker image for ECS
+├── entrypoint.sh        # Container entrypoint script
 ├── lambda/              # Lambda function code
-│   ├── main.go         # Lambda handler
-│   ├── Makefile        # Build automation
-│   └── build.ps1       # Windows build script
-├── terraform/          # Infrastructure as Code
-│   ├── main.tf         # Resource definitions
-│   ├── variables.tf    # Variable declarations
-│   ├── outputs.tf      # Output values
-│   └── terraform.tfvars.example  # Configuration template
-├── DEPLOYMENT.md       # Detailed deployment guide
-└── QUICKSTART.md       # Quick setup guide
+│   ├── main.go         # Lambda handler (triggers ECS tasks)
+│   └── Makefile        # Build automation
+└── terraform/          # Infrastructure as Code
+    ├── main.tf         # All AWS resources (Lambda, ECS, etc.)
+    ├── variables.tf    # Configuration variables
+    ├── outputs.tf      # Output values
+    └── terraform.tfvars.example  # Configuration template
 ```
 
 ## Documentation
 
-- **[QUICKSTART.md](./QUICKSTART.md)** - Get started in 5 minutes
-- **[DEPLOYMENT.md](./DEPLOYMENT.md)** - Comprehensive deployment guide
-- **[lambda/README.md](./lambda/README.md)** - Lambda function documentation
+- **[DEPLOYMENT.md](./DEPLOYMENT.md)** - Detailed deployment guide with troubleshooting
 
 ## Cleanup
 
@@ -114,6 +164,8 @@ terraform destroy
 This will delete:
 - S3 bucket and all files
 - Lambda function
+- ECS cluster and task definitions
+- ECR repository
 - EventBridge schedule
 - IAM roles and policies
 - CloudWatch logs

@@ -24,3 +24,17 @@ lambda_function_name = "s3-file-checker"
 #   - "cron(0 */6 * * ? *)" - Every 6 hours
 schedule_expression = "rate(1 hour)"
 
+# ECS Service name (used for naming ECS resources)
+ecs_service_name = "csv-handler"
+
+# ECS Task CPU (256 = 0.25 vCPU, 512 = 0.5 vCPU, 1024 = 1 vCPU)
+# Valid values: 256, 512, 1024, 2048, 4096
+ecs_task_cpu = 512
+
+# ECS Task Memory in MB
+# Must be compatible with CPU:
+# - 256 CPU: 512-2048 MB
+# - 512 CPU: 1024-4096 MB
+# - 1024 CPU: 2048-8192 MB
+ecs_task_memory = 1024
+

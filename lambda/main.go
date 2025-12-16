@@ -28,6 +28,10 @@ import (
 	// without hardcoding values in your code.
 	"os"
 
+	// strings: String manipulation functions.
+	// Provides TrimSpace, Split, and other string utilities.
+	"strings"
+
 	// github.com/aws/aws-lambda-go/lambda: AWS Lambda Go runtime library.
 	// This package provides the Lambda handler interface and runtime.
 	// It handles the communication between AWS Lambda and your Go code.
@@ -45,6 +49,12 @@ import (
 	// S3 (Simple Storage Service) is AWS's object storage service (like a file system in the cloud).
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	// github.com/aws/aws-sdk-go-v2/service/s3/types: S3-specific types and constants.
+
+	// github.com/aws/aws-sdk-go-v2/service/ecs: ECS service client.
+	// ECS (Elastic Container Service) is AWS's container orchestration service.
+	// We use it to run Fargate tasks that process CSV files.
+	"github.com/aws/aws-sdk-go-v2/service/ecs"
+	"github.com/aws/aws-sdk-go-v2/service/ecs/types"
 )
 
 // S3Checker handles checking for files in an S3 bucket.
@@ -174,20 +184,21 @@ func Handler(ctx context.Context, event LambdaRequest) (LambdaResponse, error) {
 	// Log that the function was invoked. These logs appear in CloudWatch Logs.
 	log.Printf("Lambda function invoked. Checking S3 bucket for files...")
 
-	// Get the S3 bucket name from an environment variable.
+	// Get configuration from environment variables.
 	// Environment variables are set in the Lambda function configuration.
-	// This is better than hardcoding because:
-	// - Different environments (dev, prod) can use different buckets
-	// - No need to rebuild code to change the bucket
 	bucketName := os.Getenv("S3_BUCKET_NAME")
 	if bucketName == "" {
-		// If the environment variable is not set, return an error.
-		// This is a configuration error that should be caught during setup.
 		return LambdaResponse{
 			StatusCode: 500,
 			Message:    "S3_BUCKET_NAME environment variable is not set",
 		}, fmt.Errorf("S3_BUCKET_NAME environment variable is not set")
 	}
+
+	// Get ECS configuration from environment variables
+	ecsClusterName := os.Getenv("ECS_CLUSTER_NAME")
+	ecsTaskDefinition := os.Getenv("ECS_TASK_DEFINITION")
+	ecsSubnetIds := os.Getenv("ECS_SUBNET_IDS") // Comma-separated subnet IDs
+	ecsSecurityGroupId := os.Getenv("ECS_SECURITY_GROUP_ID")
 
 	log.Printf("Checking bucket: %s", bucketName)
 
@@ -212,11 +223,40 @@ func Handler(ctx context.Context, event LambdaRequest) (LambdaResponse, error) {
 	// Log the results. This helps with debugging and monitoring.
 	log.Printf("Found %d file(s) in bucket %s", len(files), bucketName)
 
-	// If files were found, log their names.
+	// If files were found, trigger ECS tasks to process them
 	if len(files) > 0 {
 		log.Println("Files found:")
 		for _, file := range files {
 			log.Printf("  - %s (Size: %d bytes, Modified: %s)", file.Name, file.Size, file.LastModified)
+		}
+
+		// If ECS configuration is provided, trigger ECS tasks for each file
+		if ecsClusterName != "" && ecsTaskDefinition != "" && ecsSubnetIds != "" && ecsSecurityGroupId != "" {
+			log.Printf("Triggering ECS tasks to process %d file(s)...", len(files))
+
+			// Load AWS config for ECS client
+			cfg, err := config.LoadDefaultConfig(ctx)
+			if err != nil {
+				log.Printf("Warning: Failed to load AWS config for ECS: %v", err)
+			} else {
+				ecsClient := ecs.NewFromConfig(cfg)
+
+				// Process each file by triggering an ECS task
+				tasksTriggered := 0
+				for _, file := range files {
+					if err := triggerECSTask(ctx, ecsClient, ecsClusterName, ecsTaskDefinition, ecsSubnetIds, ecsSecurityGroupId, bucketName, file.Name); err != nil {
+						log.Printf("Error triggering ECS task for file %s: %v", file.Name, err)
+					} else {
+						tasksTriggered++
+						log.Printf("Successfully triggered ECS task for file: %s", file.Name)
+					}
+				}
+
+				log.Printf("Triggered %d ECS task(s) out of %d file(s)", tasksTriggered, len(files))
+			}
+		} else {
+			log.Println("ECS configuration not provided. Skipping ECS task triggering.")
+			log.Println("To enable ECS processing, set: ECS_CLUSTER_NAME, ECS_TASK_DEFINITION, ECS_SUBNET_IDS, ECS_SECURITY_GROUP_ID")
 		}
 	} else {
 		log.Println("No files found in the bucket.")
@@ -230,6 +270,112 @@ func Handler(ctx context.Context, event LambdaRequest) (LambdaResponse, error) {
 		FileCount:  len(files),
 		Files:      files,
 	}, nil
+}
+
+// triggerECSTask runs an ECS Fargate task to process a CSV file.
+//
+// Parameters:
+//   - ctx: Context for cancellation/timeout
+//   - ecsClient: ECS service client
+//   - clusterName: Name of the ECS cluster
+//   - taskDefinition: ARN or family name of the task definition
+//   - subnetIds: Comma-separated subnet IDs where the task will run
+//   - securityGroupId: Security group ID for the task
+//   - bucketName: S3 bucket name
+//   - fileName: Name of the file to process
+//
+// Returns: error if task couldn't be triggered
+//
+// How it works:
+// 1. Parses subnet IDs from comma-separated string
+// 2. Constructs input/output file paths in S3
+// 3. Creates an ECS RunTask request with the file information
+// 4. The ECS task will download the file, process it, and upload the result
+func triggerECSTask(ctx context.Context, ecsClient *ecs.Client, clusterName, taskDefinition, subnetIds, securityGroupId, bucketName, fileName string) error {
+	// Parse subnet IDs from comma-separated string
+	// Example: "subnet-123,subnet-456" -> ["subnet-123", "subnet-456"]
+	var subnetIdList []string
+	if subnetIds != "" {
+		// Split by comma and trim whitespace
+		parts := strings.Split(subnetIds, ",")
+		for _, part := range parts {
+			trimmed := strings.TrimSpace(part)
+			if trimmed != "" {
+				subnetIdList = append(subnetIdList, trimmed)
+			}
+		}
+	}
+
+	if len(subnetIdList) == 0 {
+		return fmt.Errorf("no valid subnet IDs provided")
+	}
+
+	// Create output filename (add "cleaned_" prefix)
+	// Example: "data.csv" -> "cleaned_data.csv"
+	outputFileName := fmt.Sprintf("cleaned_%s", fileName)
+
+	// Build the command for the container
+	// The container expects: -input <s3://bucket/file> -output <s3://bucket/output>
+	// Note: The Go app currently expects local file paths, so we'll need to modify
+	// the approach. For now, we'll pass the S3 paths as environment variables
+	// and the container can download/upload using AWS CLI or SDK
+	inputPath := fmt.Sprintf("s3://%s/%s", bucketName, fileName)
+	outputPath := fmt.Sprintf("s3://%s/%s", bucketName, outputFileName)
+
+	log.Printf("Triggering ECS task for file: %s -> %s", inputPath, outputPath)
+
+	// Prepare the RunTask input
+	runTaskInput := &ecs.RunTaskInput{
+		Cluster:        aws.String(clusterName),
+		TaskDefinition: aws.String(taskDefinition),
+		LaunchType:     types.LaunchTypeFargate, // Use Fargate (serverless)
+
+		// Network configuration - required for Fargate
+		NetworkConfiguration: &types.NetworkConfiguration{
+			AwsvpcConfiguration: &types.AwsVpcConfiguration{
+				Subnets:        subnetIdList,
+				SecurityGroups: []string{securityGroupId},
+				AssignPublicIp: types.AssignPublicIpEnabled, // Needed for internet access (ECR, S3)
+			},
+		},
+
+		// Override container command and environment variables
+		Overrides: &types.TaskOverride{
+			ContainerOverrides: []types.ContainerOverride{
+				{
+					Name: aws.String("csv-handler"),
+					// Set environment variables with file information
+					Environment: []types.KeyValuePair{
+						{
+							Name:  aws.String("INPUT_FILE"),
+							Value: aws.String(inputPath),
+						},
+						{
+							Name:  aws.String("OUTPUT_FILE"),
+							Value: aws.String(outputPath),
+						},
+						{
+							Name:  aws.String("S3_BUCKET_NAME"),
+							Value: aws.String(bucketName),
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Call RunTask API to start the ECS task
+	result, err := ecsClient.RunTask(ctx, runTaskInput)
+	if err != nil {
+		return fmt.Errorf("failed to run ECS task: %w", err)
+	}
+
+	// Log task information
+	if len(result.Tasks) > 0 {
+		log.Printf("ECS task started: %s (ARN: %s)", *result.Tasks[0].TaskArn, *result.Tasks[0].TaskArn)
+	}
+
+	return nil
 }
 
 // main is the entry point when running locally (for testing).
