@@ -45,6 +45,12 @@ resource "aws_s3_bucket" "csv_bucket" {
   }
 }
 
+# Create a folder in the S3 bucket
+resource "aws_s3_object" "csv_folder" {
+  bucket = aws_s3_bucket.csv_bucket.id
+  key    = "csv-files/"
+}
+
 # Block public access to the S3 bucket
 # This is a security best practice - only allow access from authorized sources
 resource "aws_s3_bucket_public_access_block" "csv_bucket" {
