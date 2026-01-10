@@ -46,36 +46,3 @@ variable "schedule_expression" {
   type        = string
   default     = "rate(1 hour)" # Default: Check every hour
 }
-
-# ECS Service name
-# This will be used to name ECS resources (cluster, task definition, etc.)
-variable "ecs_service_name" {
-  description = "Name of the ECS service and related resources"
-  type        = string
-  default     = "csv-handler"
-}
-
-# ECS Task CPU
-# Fargate CPU is specified in CPU units (1024 = 1 vCPU)
-# Valid values: 256, 512, 1024, 2048, 4096
-# 256 = 0.25 vCPU (good for small tasks)
-# 512 = 0.5 vCPU
-# 1024 = 1 vCPU (good for medium tasks)
-variable "ecs_task_cpu" {
-  description = "CPU units for ECS Fargate task (256 = 0.25 vCPU, 512 = 0.5 vCPU, 1024 = 1 vCPU)"
-  type        = number
-  default     = 512 # 0.5 vCPU - good balance for CSV processing
-}
-
-# ECS Task Memory
-# Memory in MB. Must be compatible with CPU:
-# - 256 CPU: 512-2048 MB
-# - 512 CPU: 1024-4096 MB
-# - 1024 CPU: 2048-8192 MB
-# - 2048 CPU: 4096-16384 MB
-variable "ecs_task_memory" {
-  description = "Memory in MB for ECS Fargate task"
-  type        = number
-  default     = 1024 # 1 GB - sufficient for most CSV files
-}
-
