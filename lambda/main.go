@@ -15,6 +15,7 @@ import (
 	// In Lambda, the context contains information about the invocation request
 	// and allows you to handle timeouts and cancellations.
 	"context"
+	"io"
 
 	// fmt: Formatting package for printing and formatting strings.
 	"fmt"
@@ -45,6 +46,7 @@ import (
 	// S3 (Simple Storage Service) is AWS's object storage service (like a file system in the cloud).
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	// github.com/aws/aws-sdk-go-v2/service/s3/types: S3-specific types and constants.
+	"strings"
 )
 
 // S3Checker handles checking for files in an S3 bucket.
@@ -114,6 +116,10 @@ func (s *S3Checker) CheckForFiles(ctx context.Context) ([]FileInfo, error) {
 	// Convert S3 objects to our FileInfo structure.
 	var files []FileInfo
 	for _, obj := range result.Contents {
+		// Skip folder markers (objects that end with '/' or have 0 size)
+		if obj.Key != nil && (strings.HasSuffix(*obj.Key, "/") || (obj.Size != nil && *obj.Size == 0)) {
+			continue
+		}
 		// obj is of type types.Object, which contains:
 		// - Key: The file name/path in S3 (pointer to string)
 		// - Size: File size in bytes (pointer to int64)
@@ -130,6 +136,28 @@ func (s *S3Checker) CheckForFiles(ctx context.Context) ([]FileInfo, error) {
 	}
 
 	return files, nil
+}
+
+func (s *S3Checker) ProcessFile(ctx context.Context, file FileInfo) (FileInfo, error) {
+	log.Printf("Processing file: %s", file.Name)
+	log.Printf("Bucket: %s", s.bucket)
+	log.Printf("Key: %s", file.Name)
+
+	result, err := s.s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(file.Name),
+	})
+	if err != nil {
+		return file, fmt.Errorf("failed to get object: %w", err)
+	}
+	log.Printf("Result: %s", result.Body)
+	body, err := io.ReadAll(result.Body)
+	if err != nil {
+		return file, fmt.Errorf("failed to read object body: %w", err)
+	}
+	log.Printf("Body: %s", string(body))
+
+	return file, nil
 }
 
 // FileInfo represents information about a file in S3.
@@ -213,6 +241,11 @@ func Handler(ctx context.Context, event LambdaRequest) (LambdaResponse, error) {
 		log.Println("Files found:")
 		for _, file := range files {
 			log.Printf("  - %s (Size: %d bytes, Modified: %s)", file.Name, file.Size, file.LastModified)
+			processedFile, err := checker.ProcessFile(ctx, file)
+			if err != nil {
+				log.Printf("Failed to process file: %v", err)
+			}
+			log.Printf("Processed file: %s", processedFile.Name)
 		}
 
 	} else {
