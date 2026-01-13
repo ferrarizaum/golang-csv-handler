@@ -15,7 +15,7 @@ import (
 	// In Lambda, the context contains information about the invocation request
 	// and allows you to handle timeouts and cancellations.
 	"context"
-	"io"
+	"encoding/csv"
 
 	// fmt: Formatting package for printing and formatting strings.
 	"fmt"
@@ -143,6 +143,7 @@ func (s *S3Checker) ProcessFile(ctx context.Context, file FileInfo) (FileInfo, e
 	log.Printf("Bucket: %s", s.bucket)
 	log.Printf("Key: %s", file.Name)
 
+	// Get the object from S3
 	result, err := s.s3Client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(file.Name),
@@ -150,12 +151,22 @@ func (s *S3Checker) ProcessFile(ctx context.Context, file FileInfo) (FileInfo, e
 	if err != nil {
 		return file, fmt.Errorf("failed to get object: %w", err)
 	}
-	log.Printf("Result: %s", result.Body)
-	body, err := io.ReadAll(result.Body)
+	defer result.Body.Close()
+
+	// Create a CSV reader from the response body
+	csvReader := csv.NewReader(result.Body)
+
+	// Read all records from the CSV file
+	records, err := csvReader.ReadAll()
 	if err != nil {
-		return file, fmt.Errorf("failed to read object body: %w", err)
+		return file, fmt.Errorf("failed to parse CSV: %w", err)
 	}
-	log.Printf("Body: %s", string(body))
+
+	// Log the CSV content
+	log.Printf("CSV file has %d rows", len(records))
+	for i, record := range records {
+		log.Printf("Row %d: %v", i, record)
+	}
 
 	return file, nil
 }
