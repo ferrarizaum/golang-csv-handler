@@ -14,8 +14,11 @@ import (
 	// context: Provides request-scoped values, cancellation signals, and deadlines.
 	// In Lambda, the context contains information about the invocation request
 	// and allows you to handle timeouts and cancellations.
+	"bytes"
 	"context"
 	"encoding/csv"
+	"io"
+	"regexp"
 
 	// fmt: Formatting package for printing and formatting strings.
 	"fmt"
@@ -138,6 +141,47 @@ func (s *S3Checker) CheckForFiles(ctx context.Context) ([]FileInfo, error) {
 	return files, nil
 }
 
+// cleanCSVData cleans dirty CSV data by:
+// 1. Removing or escaping problematic characters
+// 2. Normalizing line endings
+// 3. Handling malformed quotes
+// 4. Removing empty lines
+func cleanCSVData(data string) string {
+	// Normalize line endings (convert \r\n and \r to \n)
+	data = strings.ReplaceAll(data, "\r\n", "\n")
+	data = strings.ReplaceAll(data, "\r", "\n")
+
+	// Split into lines for processing
+	lines := strings.Split(data, "\n")
+	var cleanedLines []string
+
+	for _, line := range lines {
+		// Skip empty lines
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Remove or escape problematic characters
+		// Replace unescaped quotes that are not at field boundaries
+		// This regex finds quotes that are not properly escaped
+		re := regexp.MustCompile(`([^,"])"([^,"])`)
+		line = re.ReplaceAllString(line, `$1""$2`)
+
+		// Remove any non-printable characters except tabs
+		line = strings.Map(func(r rune) rune {
+			if r == '\t' || (r >= 32 && r < 127) || r >= 160 {
+				return r
+			}
+			return -1 // Remove the character
+		}, line)
+
+		cleanedLines = append(cleanedLines, line)
+	}
+
+	return strings.Join(cleanedLines, "\n")
+}
+
 func (s *S3Checker) ProcessFile(ctx context.Context, file FileInfo) (FileInfo, error) {
 	log.Printf("Processing file: %s", file.Name)
 	log.Printf("Bucket: %s", s.bucket)
@@ -153,19 +197,38 @@ func (s *S3Checker) ProcessFile(ctx context.Context, file FileInfo) (FileInfo, e
 	}
 	defer result.Body.Close()
 
-	// Create a CSV reader from the response body
-	csvReader := csv.NewReader(result.Body)
+	// Read the entire file content as raw bytes
+	rawData, err := io.ReadAll(result.Body)
+	if err != nil {
+		return file, fmt.Errorf("failed to read file content: %w", err)
+	}
 
-	// Read all records from the CSV file
+	log.Printf("Original file size: %d bytes", len(rawData))
+
+	// Convert to string and clean the data
+	dirtyCSV := string(rawData)
+	cleanedCSV := cleanCSVData(dirtyCSV)
+
+	log.Printf("Cleaned file size: %d bytes", len(cleanedCSV))
+
+	// Create a CSV reader from the cleaned data
+	csvReader := csv.NewReader(bytes.NewReader([]byte(cleanedCSV)))
+
+	// Configure the CSV reader to be more lenient with any remaining issues
+	csvReader.LazyQuotes = true       // Allow bare quotes in unquoted fields
+	csvReader.TrimLeadingSpace = true // Trim leading space in fields
+	csvReader.FieldsPerRecord = -1    // Allow variable number of fields per record
+
+	// Read all records from the cleaned CSV
 	records, err := csvReader.ReadAll()
 	if err != nil {
-		return file, fmt.Errorf("failed to parse CSV: %w", err)
+		return file, fmt.Errorf("failed to parse cleaned CSV: %w", err)
 	}
 
 	// Log the CSV content
-	log.Printf("CSV file has %d rows", len(records))
+	log.Printf("CSV file has %d rows after cleaning", len(records))
 	for i, record := range records {
-		log.Printf("Row %d: %v", i, record)
+		log.Printf("Row %d (%d fields): %v", i, len(record), record)
 	}
 
 	return file, nil
