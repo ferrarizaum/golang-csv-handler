@@ -1,0 +1,17 @@
+id,name,email,age,city,department,salary
+1,John "Johnny" Doe,john.doe@example.com,30,New York,Engineering,75000
+
+2,Jane Smith,jane.smith@example.com,25,Los Angeles,Marketing,65000
+3,Bob Johnson,bob.johnson@example.com,35,Chicago,Sales,70000
+
+
+4,Alice Williams,alice.williams@example.com,28,Houston,Engineering,80000
+5,Charlie Brown,charlie.brown@example.com,32,Phoenix,HR,60000
+6,Diana Prince,diana.prince@example.com,29,Seattle,Engineering,85000
+7,Edward "Ed" Norton,edward.norton@example.com,41,Boston,Management,95000
+
+8,Fiona Green,fiona.green@example.com,27,Denver,Marketing,62000
+9,George Miller,george.miller@example.com,33,Austin,Sales,72000
+
+
+10,Hannah Lee,hannah.lee@example.com,26,Portland,Engineering,78000
