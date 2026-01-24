@@ -46,9 +46,14 @@ resource "aws_s3_bucket" "csv_bucket" {
 }
 
 # Create a folder in the S3 bucket
-resource "aws_s3_object" "csv_folder" {
+resource "aws_s3_object" "input" {
   bucket = aws_s3_bucket.csv_bucket.id
-  key    = "csv-files/"
+  key    = "input/"
+}
+
+resource "aws_s3_object" "output" {
+  bucket = aws_s3_bucket.csv_bucket.id
+  key    = "output/"
 }
 
 # Block public access to the S3 bucket
@@ -102,7 +107,9 @@ resource "aws_iam_role_policy" "lambda_policy" {
         Effect = "Allow"
         Action = [
           "s3:ListBucket",
-          "s3:GetObject"
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject"
         ]
         Resource = [
           aws_s3_bucket.csv_bucket.arn,
@@ -155,6 +162,11 @@ resource "aws_lambda_function" "s3_checker" {
   # Note: Removed due to account concurrency limits. For cost control, monitor usage via CloudWatch.
   # If your account has higher limits, you can uncomment and set to 1:
   # reserved_concurrent_executions = 1
+
+  depends_on = [
+    aws_cloudwatch_log_group.lambda_logs,
+    aws_iam_role_policy.lambda_policy
+  ]
 
   tags = {
     Name        = var.lambda_function_name

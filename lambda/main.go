@@ -103,10 +103,10 @@ func (s *S3Checker) CheckForFiles(ctx context.Context) ([]FileInfo, error) {
 	// ListObjectsV2Input is the input structure for listing objects in S3.
 	// We specify the bucket name we want to list objects from.
 	input := &s3.ListObjectsV2Input{
-		Bucket: aws.String(s.bucket),     // The bucket to list objects from
-		Prefix: aws.String("csv-files/"), // The prefix to filter by
+		Bucket: aws.String(s.bucket), // The bucket to list objects from
+		Prefix: aws.String("input/"), // The prefix to filter by
 		// MaxKeys: You can limit the number of results (optional)
-		// Prefix: You can filter by prefix (e.g., "csv-files/") (optional)
+		// Prefix: You can filter by prefix (e.g., "input/") (optional)
 	}
 
 	// Call the ListObjectsV2 API to get objects from the bucket.
@@ -230,6 +230,27 @@ func (s *S3Checker) ProcessFile(ctx context.Context, file FileInfo) (FileInfo, e
 	for i, record := range records {
 		log.Printf("Row %d (%d fields): %v", i, len(record), record)
 	}
+
+	_, err = s.s3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String("output/" + strings.Split(file.Name, "/")[1] + "_cleaned.csv"),
+		Body:   bytes.NewReader([]byte(cleanedCSV)),
+	})
+	if err != nil {
+		return file, fmt.Errorf("failed to put object: %w", err)
+	}
+
+	log.Printf("Object put inside Output folder successfully")
+
+	_, err = s.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(file.Name),
+	})
+	if err != nil {
+		return file, fmt.Errorf("failed to delete object: %w", err)
+	}
+
+	log.Printf("Object deleted from input folder successfully")
 
 	return file, nil
 }
