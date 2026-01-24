@@ -4,21 +4,23 @@ This guide walks you through deploying the complete solution step by step.
 
 ## Overview
 
-This project has three main components:
+This project has two main components:
 1. **CLI Tool** (`main.go`): Command-line CSV handler (runs locally)
-2. **Lambda Function** (`lambda/`): Serverless function that checks S3 for files and triggers ECS tasks
-3. **ECS Fargate Container**: Processes CSV files (downloads, cleans, uploads back to S3)
+2. **Lambda Function** (`lambda/`): Serverless function that checks S3 for files and processes them directly (downloads, cleans, uploads back to S3)
 
 ## Architecture
 
 ```
 EventBridge Scheduler (Cron)
-    ↓ (triggers)
-Lambda Function (checks S3 for CSV files)
-    ↓ (triggers ECS task for each file)
-ECS Fargate Container
-    ↓ (downloads, processes, uploads)
-S3 Bucket (stores cleaned CSV files)
+    ↓ (triggers on schedule)
+Lambda Function
+    ↓ (checks S3 input/ folder for CSV files)
+    ↓ (downloads, cleans, and processes each file)
+    ↓ (uploads cleaned file to output/ folder)
+    ↓ (deletes original from input/ folder)
+S3 Bucket
+    ├── input/  (raw CSV files)
+    └── output/ (cleaned CSV files with _cleaned.csv suffix)
     ↓ (logs)
 CloudWatch Logs
 ```
@@ -81,7 +83,7 @@ The Lambda function must be compiled for Linux (Amazon Linux 2):
 ```bash
 # From project root
 cd lambda
-go mod tidy  # Update dependencies (includes ECS SDK)
+go mod tidy  # Update dependencies
 make build
 ```
 
@@ -105,10 +107,17 @@ aws_region = "us-east-1"
 environment = "dev"
 s3_bucket_name = "my-csv-files-bucket-12345"  # MUST be globally unique!
 lambda_function_name = "s3-file-checker"
-schedule_expression = "rate(1 hour)"  # Check every hour
+schedule_expression = "rate(5 minutes)"  # Check every 5 minutes
 ```
 
-**Important:** S3 bucket names must be globally unique. Use random numbers/letters.
+**Important:** 
+- S3 bucket names must be globally unique across all AWS accounts. Use random numbers/letters.
+- S3 bucket names can only contain lowercase letters, numbers, dots, and hyphens (no underscores!)
+- The schedule expression can be:
+  - `rate(5 minutes)` - Every 5 minutes
+  - `rate(1 hour)` - Every hour
+  - `rate(1 day)` - Every day
+  - `cron(0 9 * * ? *)` - Every day at 9:00 AM UTC
 
 ### Step 4: Initialize Terraform
 
@@ -128,17 +137,15 @@ terraform plan
 ```
 
 This shows what will be created:
-- S3 bucket
+- S3 bucket with input/ and output/ folders
 - Lambda function
-- ECS cluster and task definition
-- ECR repository (for Docker images)
 - EventBridge schedule
 - IAM roles and policies
 - CloudWatch log groups
 
 Review the output carefully!
 
-### Step 6: Deploy All Infrastructure (Lambda + ECS)
+### Step 6: Deploy All Infrastructure
 
 ```bash
 terraform apply
@@ -148,147 +155,28 @@ Terraform will:
 1. Show the plan again
 2. Ask for confirmation (type `yes`)
 3. Create all resources:
-   - S3 bucket
+   - S3 bucket with input/ and output/ folders
    - Lambda function
-   - ECS cluster and task definition
-   - ECR repository (for Docker images)
    - EventBridge schedule
    - IAM roles and policies
    - CloudWatch log groups
-4. Show outputs (bucket name, Lambda ARN, ECR URL, etc.)
+4. Show outputs (bucket name, Lambda ARN, etc.)
 
-**Expected time:** 2-3 minutes
+**Expected time:** 1-2 minutes
 
-**Note:** The ECS task definition is created, but tasks won't run until you push the Docker image (Step 7).
-
-### Step 7: Build and Push Docker Image (for ECS)
-
-After Terraform creates the ECR repository, build and push your Docker image:
-
-**Step 1: Get your ECR repository URL and region**
-
-Run these commands in your terminal (from the `terraform` directory):
-
-```powershell
-# Windows PowerShell - Get ECR URL and region from Terraform
-$ECR_URL = terraform output -raw ecr_repository_url
-$REGION = terraform output -raw aws_region
-
-# Verify both are set
-Write-Host "ECR URL: $ECR_URL"
-Write-Host "Region: $REGION"
-```
-
-**If `$REGION` is still empty**, you can get it from your AWS CLI config:
-```powershell
-$REGION = aws configure get region
-```
-
-Or check your `terraform.tfvars` file and set it manually:
-```powershell
-$REGION = "us-east-1"  # Replace with the region from your terraform.tfvars file
-```
-
-**Step 2: Authenticate Docker with ECR**
-
-First, verify your ECR URL format is correct:
-```powershell
-# Check the ECR URL format
-Write-Host "ECR URL: $ECR_URL"
-# Should look like: 123456789012.dkr.ecr.us-east-1.amazonaws.com/csv-handler-repo
-# Must include the repository name at the end!
-```
-
-If the URL is missing the repository name (e.g., just `account.dkr.ecr.region.amazonaws.com`), you need to add it:
-```powershell
-# Get just the repository name from Terraform
-$REPO_NAME = terraform output -raw ecs_service_name
-$REPO_NAME = "$REPO_NAME-repo"  # ECR repo name format
-$ECR_URL = "$ECR_URL/$REPO_NAME"
-Write-Host "Full ECR URL: $ECR_URL"
-```
-
-Now authenticate:
-```powershell
-# Windows PowerShell - Authenticate with ECR
-aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ECR_URL
-```
-
-**Important:** 
-- Make sure you're in the `terraform` directory when running `terraform output`
-- The ECR URL must include the repository name: `account.dkr.ecr.region.amazonaws.com/repo-name`
-- If you get "400 Bad Request", the URL format is likely wrong (missing repo name)
-- If `$ECR_URL` is empty, the docker login command will fail and try Docker Hub instead
--- // FIXED IT RUNNING POWERSHELL-safe version | if any docker command fail, echo the url and use it directly
-
-**Build and push the image:**
-
-```bash
-# From project root directory
-docker build -t csv-handler .
-
-# Tag the image
-# Linux/macOS/Git Bash:
-docker tag csv-handler:latest $ECR_URL:latest
-
-# Windows PowerShell:
-docker tag csv-handler:latest $ECR_URL:latest
-
-
-# Push to ECR
-docker push $ECR_URL:latest
-```
-
-**Troubleshooting:**
-
-**Error: "400 Bad Request" when logging in:**
-- Verify the ECR URL includes the repository name: `account.dkr.ecr.region.amazonaws.com/repo-name`
-- Check the repository exists: `aws ecr describe-repositories --region $REGION`
-- Make sure you're using the correct region (must match where ECR was created)
-- Try getting a fresh login token: `aws ecr get-login-password --region $REGION`
-
-**Error: "unauthorized" error:**
-- Make sure `$ECR_URL` is set correctly
-- Verify the URL looks like: `123456789012.dkr.ecr.us-east-1.amazonaws.com/csv-handler-repo`
-- Check your AWS credentials: `aws sts get-caller-identity`
-- Verify you have ECR permissions
-
-**Verify ECR repository exists:**
-```powershell
-# List all ECR repositories
-aws ecr describe-repositories --region $REGION
-
-# Check if your specific repo exists
-aws ecr describe-repositories --repository-names csv-handler-repo --region $REGION
-```
-
-**Important Notes:**
-- This uses your **AWS CLI credentials** (the ones you set up with `aws configure` in Step 1)
-- The username is always **"AWS"** (not your email address!)
-- The password is a temporary token that AWS CLI generates automatically
-- Replace `<your-region>` with your AWS region (e.g., `us-east-1`)
-- This step is required before ECS tasks can run. Lambda will work fine without it.
-
-### Step 8: Verify Deployment
+### Step 7: Verify Deployment
 
 #### Check Lambda Function
 ```bash
 aws lambda get-function --function-name s3-file-checker
 ```
 
-#### Check S3 Bucket
+#### Check S3 Bucket and Folders
 ```bash
+# List bucket contents
 aws s3 ls s3://<your-bucket-name>
-```
 
-#### Check ECS Cluster
-```bash
-aws ecs describe-clusters --clusters csv-handler-cluster
-```
-
-#### Check ECR Repository
-```bash
-aws ecr describe-repositories --repository-names csv-handler-repo
+# Should show input/ and output/ folders
 ```
 
 #### Check EventBridge Schedule
@@ -296,14 +184,17 @@ aws ecr describe-repositories --repository-names csv-handler-repo
 aws scheduler get-schedule --name s3-file-checker-schedule --group-name default
 ```
 
-### Step 9: Test the Lambda
+### Step 8: Test the Lambda
 
 #### Upload a Test File
 ```bash
+# Create a test CSV file
 echo "name,email,age
-John,john@example.com,30" > test.csv
+John,john@example.com,30
+Jane,jane@example.com,25" > test.csv
 
-aws s3 cp test.csv s3://<your-bucket-name>/test.csv
+# Upload to the input folder
+aws s3 cp test.csv s3://<your-bucket-name>/input/test.csv
 ```
 
 #### Manually Invoke Lambda
@@ -324,54 +215,48 @@ You should see:
   "fileCount": 1,
   "files": [
     {
-      "name": "test.csv",
-      "size": 45,
-      "lastModified": "2024-01-15 10:30:00"
+      "name": "input/test.csv",
+      "size": 67,
+      "lastModified": "2026-01-24 10:30:00"
     }
   ]
 }
 ```
 
-#### View Logs
+#### View Lambda Logs
 ```bash
 aws logs tail /aws/lambda/s3-file-checker --follow
 ```
 
-### Step 10: Test ECS Processing
+You should see logs showing:
+- File found in input/ folder
+- Processing file
+- CSV content being read
+- File uploaded to output/ folder
+- Original file deleted from input/ folder
 
-1. Upload a CSV file to S3:
-   ```bash
-   echo "name,email,age
-   John,john@example.com,30
-   Jane,jane@example.com,25" > test.csv
-   aws s3 cp test.csv s3://<your-bucket-name>/test.csv
-   ```
+#### Verify Cleaned File
+```bash
+# Check output folder for cleaned file
+aws s3 ls s3://<your-bucket-name>/output/
 
-2. Manually trigger Lambda (or wait for schedule):
-   ```bash
-   aws lambda invoke --function-name s3-file-checker --payload '{}' response.json
-   ```
+# Download and view the cleaned file
+aws s3 cp s3://<your-bucket-name>/output/test.csv_cleaned.csv cleaned_test.csv
+cat cleaned_test.csv
+```
 
-3. Lambda will automatically trigger an ECS task to process the file
+#### Verify Original File Deleted
+```bash
+# Check that input folder is now empty
+aws s3 ls s3://<your-bucket-name>/input/
+```
 
-4. Check ECS logs:
-   ```bash
-   aws logs tail /ecs/csv-handler --follow
-   ```
+### Step 9: Wait for Scheduled Execution
 
-5. Verify cleaned file appears in S3:
-   ```bash
-   aws s3 ls s3://<your-bucket-name>/
-   # You should see "cleaned_test.csv"
-   ```
-
-### Step 11: Wait for Scheduled Execution
-
-The Lambda will automatically run based on your schedule (e.g., every hour) and trigger ECS tasks for any CSV files found.
+The Lambda will automatically run based on your schedule (e.g., every 5 minutes) and process any CSV files found in the input/ folder.
 
 Check CloudWatch Logs:
 - Lambda logs: `/aws/lambda/s3-file-checker`
-- ECS logs: `/ecs/csv-handler`
 
 ## Understanding AWS Services
 
@@ -423,13 +308,19 @@ Terraform detects the file change and updates the Lambda.
 Edit `terraform/terraform.tfvars`:
 ```hcl
 schedule_expression = "rate(5 minutes)"  # Check every 5 minutes
+# OR
+schedule_expression = "rate(1 hour)"     # Check every hour
+# OR
+schedule_expression = "cron(0 9 * * ? *)" # Every day at 9:00 AM UTC
 ```
 
-Then:
+Then apply the changes:
 ```bash
 cd terraform
 terraform apply
 ```
+
+The schedule will be updated without affecting your S3 bucket or files.
 
 ## Monitoring
 
@@ -449,20 +340,34 @@ Create CloudWatch alarms to notify you of errors or when files are found.
 ### Lambda Error: "S3_BUCKET_NAME environment variable is not set"
 - Check Terraform applied successfully
 - Verify environment variable in Lambda console
+- Run `terraform apply` again to ensure all resources are created
 
-### Lambda Error: "Access Denied"
-- Check IAM role has S3 permissions
+### Lambda Error: "Access Denied" when accessing S3
+- Check IAM role has S3 permissions (ListBucket, GetObject, PutObject, DeleteObject)
 - Verify bucket name is correct
+- Check the bucket exists: `aws s3 ls s3://<your-bucket-name>`
 
-### No logs appearing
-- Check CloudWatch Log Group exists
+### Lambda Error: "failed to parse cleaned CSV"
+- Check CloudWatch logs for specific CSV parsing errors
+- The cleaner handles most issues, but some files may need manual review
+- Try downloading the file and checking its format
+
+### No logs appearing in CloudWatch
+- Check CloudWatch Log Group exists: `/aws/lambda/s3-file-checker`
 - Verify Lambda has logging permissions
 - Wait a few minutes (logs can be delayed)
+- Check IAM role has `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents` permissions
 
-### Schedule not triggering
-- Check schedule is ENABLED
+### Schedule not triggering Lambda
+- Check schedule is ENABLED: `aws scheduler get-schedule --name s3-file-checker-schedule --group-name default`
 - Verify IAM role has invoke permission
-- Check schedule expression syntax
+- Check schedule expression syntax in `terraform.tfvars`
+- View schedule history in AWS Console → EventBridge → Schedules
+
+### Files not being deleted from input/ folder
+- Check Lambda logs for deletion errors
+- Verify IAM role has `s3:DeleteObject` permission
+- Check if Lambda completed successfully (no timeout)
 
 ## Cleanup
 
@@ -474,53 +379,65 @@ terraform destroy
 ```
 
 **Warning:** This deletes:
-- S3 bucket and all files
+- S3 bucket and all files (including input/ and output/ folders)
 - Lambda function
-- ECS cluster and task definitions
-- ECR repository (and all Docker images)
 - EventBridge schedule
-- IAM roles
+- IAM roles and policies
 - CloudWatch logs
 
-## How ECS Works
+## How CSV Processing Works
 
-The Lambda function automatically triggers ECS Fargate tasks to process CSV files:
+The Lambda function directly processes CSV files:
 
-1. **Lambda** finds CSV files in S3
-2. For each file, **Lambda** triggers an **ECS Fargate task**
-3. **ECS task** downloads file from S3, processes it with your Go CSV handler, uploads cleaned version back
-4. All logs go to CloudWatch
+1. **EventBridge Scheduler** triggers Lambda on schedule (e.g., every 5 minutes)
+2. **Lambda** checks the S3 bucket's `input/` folder for CSV files
+3. For each CSV file found:
+   - Downloads the file from S3
+   - Cleans the data:
+     - Removes or escapes problematic characters
+     - Normalizes line endings (converts `\r\n` and `\r` to `\n`)
+     - Handles malformed quotes
+     - Removes empty lines
+     - Removes non-printable characters
+   - Parses the CSV with lenient settings (LazyQuotes, TrimLeadingSpace)
+   - Uploads cleaned file to `output/` folder with `_cleaned.csv` suffix
+   - Deletes the original file from `input/` folder
+4. All operations are logged to CloudWatch
 
-## ECS Configuration
+## Lambda Configuration
 
-Edit `terraform/terraform.tfvars` to customize ECS:
-- `ecs_service_name` - Name for ECS resources (default: "csv-handler")
-- `ecs_task_cpu` - CPU units: 256 (0.25 vCPU), 512 (0.5 vCPU), 1024 (1 vCPU)
-- `ecs_task_memory` - Memory in MB (must match CPU limits)
+The Lambda function has the following settings (configured in `terraform/main.tf`):
+- **Runtime**: `provided.al2023` (Go custom runtime)
+- **Architecture**: `x86_64` (matches the amd64 build)
+- **Timeout**: 30 seconds
+- **Memory**: Default (128 MB)
+- **Environment Variables**:
+  - `S3_BUCKET_NAME` - The S3 bucket to check
 
-### ECS Troubleshooting
+### Lambda Troubleshooting
 
-**Task fails to start:**
-- Check CloudWatch logs: `/ecs/csv-handler`
-- Verify Docker image was pushed successfully
-- Check IAM roles have correct permissions
+**Lambda timeout:**
+- Increase timeout in `terraform/main.tf` (currently 30 seconds)
+- Check CloudWatch logs for processing time
+- Consider splitting large files
 
-**Container can't access S3:**
-- Verify task role has S3 permissions
-- Check security group allows outbound traffic
-- Ensure subnet has internet access
+**CSV parsing errors:**
+- Check CloudWatch logs for specific error messages
+- Verify CSV file format is valid
+- The cleaner handles most common issues automatically
 
-**Lambda can't trigger tasks:**
-- Check Lambda IAM role has `ecs:RunTask` permission
-- Verify ECS cluster name and task definition are correct
-- Check Lambda environment variables are set
+**Files not being processed:**
+- Verify files are in the `input/` folder (not root)
+- Check Lambda IAM role has S3 permissions
+- Check EventBridge schedule is enabled
+- Verify Lambda environment variables are set
 
 ## Next Steps
 
-1. **Monitor costs**: Use AWS Cost Explorer to track ECS usage
-2. **Add retry logic**: Handle failed ECS tasks
-3. **Set up alarms**: CloudWatch alarms for task failures
-4. **Optimize resources**: Adjust CPU/memory based on file sizes
+1. **Monitor costs**: Use AWS Cost Explorer to track Lambda usage
+2. **Add retry logic**: Handle failed processing attempts
+3. **Set up alarms**: CloudWatch alarms for Lambda errors
+4. **Optimize timeout**: Adjust based on actual file sizes
 
 ## Cost Optimization
 
