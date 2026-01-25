@@ -56,6 +56,11 @@ resource "aws_s3_object" "output" {
   key    = "output/"
 }
 
+resource "aws_s3_object" "archive" {
+  bucket = aws_s3_bucket.csv_bucket.id
+  key    = "archive/"
+}
+
 # Block public access to the S3 bucket
 # This is a security best practice - only allow access from authorized sources
 resource "aws_s3_bucket_public_access_block" "csv_bucket" {

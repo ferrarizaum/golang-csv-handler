@@ -240,6 +240,15 @@ func (s *S3Checker) ProcessFile(ctx context.Context, file FileInfo) (FileInfo, e
 		return file, fmt.Errorf("failed to put object: %w", err)
 	}
 
+	_, err = s.s3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String("archive/" + strings.Split(file.Name, "/")[1]),
+		Body:   bytes.NewReader([]byte(file.Name)),
+	})
+	if err != nil {
+		return file, fmt.Errorf("failed to put object: %w", err)
+	}
+
 	log.Printf("Object put inside Output folder successfully")
 
 	_, err = s.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
