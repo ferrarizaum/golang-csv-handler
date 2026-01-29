@@ -1,4 +1,4 @@
-package processfile
+package helpers
 
 import (
 	"bytes"

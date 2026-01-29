@@ -1,4 +1,4 @@
-package checkforfiles
+package helpers
 
 import (
 	"context"

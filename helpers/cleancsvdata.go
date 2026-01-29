@@ -1,4 +1,4 @@
-package cleancsvdata
+package helpers
 
 import (
 	"regexp"
