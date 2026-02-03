@@ -14,11 +14,8 @@ import (
 	// context: Provides request-scoped values, cancellation signals, and deadlines.
 	// In Lambda, the context contains information about the invocation request
 	// and allows you to handle timeouts and cancellations.
-	"bytes"
+
 	"context"
-	"encoding/csv"
-	"io"
-	"regexp"
 
 	// fmt: Formatting package for printing and formatting strings.
 	"fmt"
@@ -39,247 +36,10 @@ import (
 
 	// github.com/aws/aws-sdk-go-v2/aws: AWS SDK configuration and utilities.
 	// The AWS SDK is a library that provides APIs to interact with AWS services.
-	"github.com/aws/aws-sdk-go-v2/aws"
 
-	// github.com/aws/aws-sdk-go-v2/config: Loads AWS configuration (credentials, region, etc.).
-	// It automatically reads from environment variables, AWS credentials file, or IAM roles.
-	"github.com/aws/aws-sdk-go-v2/config"
-
-	// github.com/aws/aws-sdk-go-v2/service/s3: S3 service client.
-	// S3 (Simple Storage Service) is AWS's object storage service (like a file system in the cloud).
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	// github.com/aws/aws-sdk-go-v2/service/s3/types: S3-specific types and constants.
-	"strings"
+	// golang-csv-handler/models: Our models package containing S3Checker and data structures
+	"golang-csv-handler/models"
 )
-
-// S3Checker handles checking for files in an S3 bucket.
-// This struct holds the S3 client and bucket name.
-type S3Checker struct {
-	s3Client *s3.Client // S3 client used to make API calls to S3
-	bucket   string     // Name of the S3 bucket to check
-}
-
-// NewS3Checker creates a new S3Checker instance.
-//
-// Parameters:
-//   - bucketName: The name of the S3 bucket to check for files
-//
-// Returns: *S3Checker and an error
-//
-// This function:
-// 1. Loads AWS configuration (credentials, region) automatically
-// 2. Creates an S3 client to interact with S3
-// 3. Returns a configured S3Checker ready to use
-func NewS3Checker(bucketName string) (*S3Checker, error) {
-	// Load AWS configuration. This automatically:
-	// - Reads AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY from environment (if set)
-	// - Reads from ~/.aws/credentials file (if exists)
-	// - Uses IAM role credentials (if running in Lambda/EC2)
-	// - Reads AWS_REGION from environment or config
-	cfg, err := config.LoadDefaultConfig(context.TODO())
-	if err != nil {
-		return nil, fmt.Errorf("failed to load AWS config: %w", err)
-	}
-
-	// Create an S3 client using the loaded configuration.
-	// The client is used to make API calls to S3 (list objects, get objects, etc.)
-	s3Client := s3.NewFromConfig(cfg)
-
-	return &S3Checker{
-		s3Client: s3Client,
-		bucket:   bucketName,
-	}, nil
-}
-
-// CheckForFiles lists objects in the S3 bucket and returns information about them.
-//
-// Returns: A slice of file information and an error
-//
-// What this does:
-// 1. Calls S3's ListObjectsV2 API to get a list of files in the bucket
-// 2. Extracts file names, sizes, and last modified dates
-// 3. Returns the information as a structured format
-func (s *S3Checker) CheckForFiles(ctx context.Context) ([]FileInfo, error) {
-	// ListObjectsV2Input is the input structure for listing objects in S3.
-	// We specify the bucket name we want to list objects from.
-	input := &s3.ListObjectsV2Input{
-		Bucket: aws.String(s.bucket), // The bucket to list objects from
-		Prefix: aws.String("input/"), // The prefix to filter by
-		// MaxKeys: You can limit the number of results (optional)
-		// Prefix: You can filter by prefix (e.g., "input/") (optional)
-	}
-
-	// Call the ListObjectsV2 API to get objects from the bucket.
-	// This is an API call to AWS S3 service.
-	result, err := s.s3Client.ListObjectsV2(ctx, input)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list objects in bucket %s: %w", s.bucket, err)
-	}
-
-	// Convert S3 objects to our FileInfo structure.
-	var files []FileInfo
-	for _, obj := range result.Contents {
-		// Skip folder markers (objects that end with '/' or have 0 size)
-		if obj.Key != nil && (strings.HasSuffix(*obj.Key, "/") || (obj.Size != nil && *obj.Size == 0)) {
-			continue
-		}
-		// obj is of type types.Object, which contains:
-		// - Key: The file name/path in S3 (pointer to string)
-		// - Size: File size in bytes (pointer to int64)
-		// - LastModified: When the file was last modified
-		var size int64
-		if obj.Size != nil {
-			size = *obj.Size
-		}
-		files = append(files, FileInfo{
-			Name:         *obj.Key,                                       // File name/path
-			Size:         size,                                           // File size in bytes (dereferenced from pointer)
-			LastModified: obj.LastModified.Format("2006-01-02 15:04:05"), // Format timestamp
-		})
-	}
-
-	return files, nil
-}
-
-// cleanCSVData cleans dirty CSV data by:
-// 1. Removing or escaping problematic characters
-// 2. Normalizing line endings
-// 3. Handling malformed quotes
-// 4. Removing empty lines
-func cleanCSVData(data string) string {
-	// Normalize line endings (convert \r\n and \r to \n)
-	data = strings.ReplaceAll(data, "\r\n", "\n")
-	data = strings.ReplaceAll(data, "\r", "\n")
-
-	// Split into lines for processing
-	lines := strings.Split(data, "\n")
-	var cleanedLines []string
-
-	for _, line := range lines {
-		// Skip empty lines
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		// Remove or escape problematic characters
-		// Replace unescaped quotes that are not at field boundaries
-		// This regex finds quotes that are not properly escaped
-		re := regexp.MustCompile(`([^,"])"([^,"])`)
-		line = re.ReplaceAllString(line, `$1""$2`)
-
-		// Remove any non-printable characters except tabs
-		line = strings.Map(func(r rune) rune {
-			if r == '\t' || (r >= 32 && r < 127) || r >= 160 {
-				return r
-			}
-			return -1 // Remove the character
-		}, line)
-
-		cleanedLines = append(cleanedLines, line)
-	}
-
-	return strings.Join(cleanedLines, "\n")
-}
-
-func (s *S3Checker) ProcessFile(ctx context.Context, file FileInfo) (FileInfo, error) {
-	log.Printf("Processing file: %s", file.Name)
-	log.Printf("Bucket: %s", s.bucket)
-	log.Printf("Key: %s", file.Name)
-
-	// Get the object from S3
-	result, err := s.s3Client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(file.Name),
-	})
-	if err != nil {
-		return file, fmt.Errorf("failed to get object: %w", err)
-	}
-	defer result.Body.Close()
-
-	// Read the entire file content as raw bytes
-	rawData, err := io.ReadAll(result.Body)
-	if err != nil {
-		return file, fmt.Errorf("failed to read file content: %w", err)
-	}
-
-	log.Printf("Original file size: %d bytes", len(rawData))
-
-	// Convert to string and clean the data
-	dirtyCSV := string(rawData)
-	cleanedCSV := cleanCSVData(dirtyCSV)
-
-	log.Printf("Cleaned file size: %d bytes", len(cleanedCSV))
-
-	// Create a CSV reader from the cleaned data
-	csvReader := csv.NewReader(bytes.NewReader([]byte(cleanedCSV)))
-
-	// Configure the CSV reader to be more lenient with any remaining issues
-	csvReader.LazyQuotes = true       // Allow bare quotes in unquoted fields
-	csvReader.TrimLeadingSpace = true // Trim leading space in fields
-	csvReader.FieldsPerRecord = -1    // Allow variable number of fields per record
-
-	// Read all records from the cleaned CSV
-	records, err := csvReader.ReadAll()
-	if err != nil {
-		return file, fmt.Errorf("failed to parse cleaned CSV: %w", err)
-	}
-
-	// Log the CSV content
-	log.Printf("CSV file has %d rows after cleaning", len(records))
-	for i, record := range records {
-		log.Printf("Row %d (%d fields): %v", i, len(record), record)
-	}
-
-	_, err = s.s3Client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String("output/" + strings.Split(file.Name, "/")[1] + "_cleaned.csv"),
-		Body:   bytes.NewReader([]byte(cleanedCSV)),
-	})
-	if err != nil {
-		return file, fmt.Errorf("failed to put object: %w", err)
-	}
-
-	_, err = s.s3Client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String("archive/" + strings.Split(file.Name, "/")[1]),
-		Body:   bytes.NewReader([]byte(file.Name)),
-	})
-	if err != nil {
-		return file, fmt.Errorf("failed to put object: %w", err)
-	}
-
-	log.Printf("Object put inside Output folder successfully")
-
-	_, err = s.s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(file.Name),
-	})
-	if err != nil {
-		return file, fmt.Errorf("failed to delete object: %w", err)
-	}
-
-	log.Printf("Object deleted from input folder successfully")
-
-	return file, nil
-}
-
-// FileInfo represents information about a file in S3.
-// This is a simple struct to hold file metadata.
-type FileInfo struct {
-	Name         string // File name/path in S3
-	Size         int64  // File size in bytes
-	LastModified string // Last modified date/time as a formatted string
-}
-
-// LambdaResponse represents the response that Lambda will return.
-// This structure will be automatically converted to JSON by Lambda.
-type LambdaResponse struct {
-	StatusCode int        `json:"statusCode"` // HTTP-like status code (200 = success)
-	Message    string     `json:"message"`    // Human-readable message
-	FileCount  int        `json:"fileCount"`  // Number of files found
-	Files      []FileInfo `json:"files"`      // List of files found
-}
 
 // LambdaRequest represents the event that triggers the Lambda.
 // EventBridge scheduler sends a JSON event, but for a simple scheduler trigger,
@@ -303,7 +63,7 @@ type LambdaRequest struct {
 // 2. We read the S3 bucket name from an environment variable
 // 3. We check for files in the S3 bucket
 // 4. We return a response with the results
-func Handler(ctx context.Context, event LambdaRequest) (LambdaResponse, error) {
+func Handler(ctx context.Context, event LambdaRequest) (models.LambdaResponse, error) {
 	// Log that the function was invoked. These logs appear in CloudWatch Logs.
 	log.Printf("Lambda function invoked. Checking S3 bucket for files...")
 
@@ -311,7 +71,7 @@ func Handler(ctx context.Context, event LambdaRequest) (LambdaResponse, error) {
 	// Environment variables are set in the Lambda function configuration.
 	bucketName := os.Getenv("S3_BUCKET_NAME")
 	if bucketName == "" {
-		return LambdaResponse{
+		return models.LambdaResponse{
 			StatusCode: 500,
 			Message:    "S3_BUCKET_NAME environment variable is not set",
 		}, fmt.Errorf("S3_BUCKET_NAME environment variable is not set")
@@ -320,9 +80,9 @@ func Handler(ctx context.Context, event LambdaRequest) (LambdaResponse, error) {
 	log.Printf("Checking bucket: %s", bucketName)
 
 	// Create an S3Checker instance to interact with S3.
-	checker, err := NewS3Checker(bucketName)
+	checker, err := models.NewS3Checker(bucketName)
 	if err != nil {
-		return LambdaResponse{
+		return models.LambdaResponse{
 			StatusCode: 500,
 			Message:    fmt.Sprintf("Failed to create S3 checker: %v", err),
 		}, err
@@ -331,7 +91,7 @@ func Handler(ctx context.Context, event LambdaRequest) (LambdaResponse, error) {
 	// Check for files in the S3 bucket.
 	files, err := checker.CheckForFiles(ctx)
 	if err != nil {
-		return LambdaResponse{
+		return models.LambdaResponse{
 			StatusCode: 500,
 			Message:    fmt.Sprintf("Failed to check S3 bucket: %v", err),
 		}, err
@@ -358,7 +118,7 @@ func Handler(ctx context.Context, event LambdaRequest) (LambdaResponse, error) {
 
 	// Return a successful response with the file information.
 	// Lambda will automatically convert this struct to JSON.
-	return LambdaResponse{
+	return models.LambdaResponse{
 		StatusCode: 200,
 		Message:    fmt.Sprintf("Successfully checked bucket. Found %d file(s)", len(files)),
 		FileCount:  len(files),

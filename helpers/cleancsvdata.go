@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-func cleanCSVData(data string) string {
+func CleanCSVData(data string) string {
 	// Normalize line endings (convert \r\n and \r to \n)
 	data = strings.ReplaceAll(data, "\r\n", "\n")
 	data = strings.ReplaceAll(data, "\r", "\n")
