@@ -17,6 +17,10 @@ terraform/.terraform/
 # Lambda compiled binaries (regenerate with make build)
 lambda/bootstrap
 lambda/*.exe
+lambda/function.zip
+
+# Build output directory
+bin/
 
 # Go compiled binaries
 *.exe
@@ -30,6 +34,8 @@ lambda/*.exe
 
 # Output of the go coverage tool
 *.out
+coverage.out
+coverage.html
 
 # Dependency directories
 vendor/
