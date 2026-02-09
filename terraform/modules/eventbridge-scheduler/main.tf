@@ -55,12 +55,7 @@ resource "aws_scheduler_schedule" "this" {
     role_arn = aws_iam_role.scheduler.arn
 
     # Optional: Pass custom input to Lambda
-    dynamic "input" {
-      for_each = var.input_json != null ? [1] : []
-      content {
-        input = var.input_json
-      }
-    }
+    input = var.input_json
   }
 
   state = var.enabled ? "ENABLED" : "DISABLED"
